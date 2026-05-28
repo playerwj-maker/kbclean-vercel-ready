@@ -307,6 +307,121 @@ function useInjectFont() {
 
 const fontStack = `'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif`;
 
+/* ─────────────────────────────────────────────
+   구글 보고서 전송 유틸
+   - 사진은 전송 용량을 줄이기 위해 브라우저에서 JPEG로 압축합니다.
+   - Vercel API(/api/submit-report)가 Google Apps Script로 전달합니다.
+   ───────────────────────────────────────────── */
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+function imageFileToCompressedDataUrl(file, maxSize = 1400, quality = 0.76) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const originalDataUrl = reader.result;
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const scale = Math.min(1, maxSize / img.width, maxSize / img.height);
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(img.width * scale));
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL("image/jpeg", quality));
+        } catch (error) {
+          // 압축 실패 시 원본 데이터 URL을 그대로 사용합니다.
+          resolve(originalDataUrl);
+        }
+      };
+      img.onerror = () => resolve(originalDataUrl);
+      img.src = originalDataUrl;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function buildDailyReportPayload(state) {
+  const checklist = SITE.regularPoints.map((point) => ({
+    id: point.id,
+    label: point.text,
+    icon: point.icon,
+    done: !!state.checks[point.id]?.done,
+    photoTaken: !!state.checks[point.id]?.photo,
+    photoName: state.checks[point.id]?.photoName || "",
+    photoCapturedAt: state.checks[point.id]?.photoCapturedAt || "",
+    photoDataUrl: state.checks[point.id]?.photoDataUrl || "",
+  }));
+
+  const specialOrders = SITE.todayOrders.map((order) => ({
+    id: order.id,
+    urgency: order.urgency,
+    text: order.text,
+    done: !!state.checks[`order_${order.id}`]?.done,
+  }));
+
+  const requiredPhotos = SITE.requiredPhotos.map((photo) => ({
+    id: photo.id,
+    label: photo.text,
+    emoji: photo.emoji,
+    taken: !!state.requiredPhotos[photo.id]?.taken,
+    photoName: state.requiredPhotos[photo.id]?.photoName || "",
+    photoCapturedAt: state.requiredPhotos[photo.id]?.photoCapturedAt || "",
+    photoDataUrl: state.requiredPhotos[photo.id]?.photoDataUrl || "",
+  }));
+
+  return {
+    appVersion: "kbclean-field-v1-gas",
+    submittedAt: new Date().toISOString(),
+    site: SITE,
+    staff: SITE.staff,
+    manager: SITE.manager,
+    clockInAt: state.clockInAt || "",
+    clockOutAt: state.clockOutAt || "",
+    checklist,
+    specialOrders,
+    requiredPhotos,
+    notes: {
+      noteMode: state.noteMode || "",
+      chips: state.chips || [],
+      text: state.text || "",
+      voiceMimeType: state.voiceMimeType || "",
+      voiceDuration: state.voiceDuration || 0,
+      voiceDataUrl: state.voiceDataUrl || "",
+    },
+  };
+}
+
+async function submitDailyReport(payload) {
+  const response = await fetch("/api/submit-report", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await response.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (error) {
+    data = { ok: false, message: text };
+  }
+
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.message || "구글 보고서 전송에 실패했습니다.");
+  }
+  return data;
+}
+
+
 function Brand({ size = "md", invert = false }) {
   const ink = invert ? "#fff" : KB.navy;
   const sub = invert ? KB.goldLight : KB.gold;
@@ -569,9 +684,15 @@ function WorkerApp({ onExit }) {
     chips: [],
     text: "",
     voiceBlobUrl: null,
+    voiceDataUrl: null,
     voiceMimeType: "",
     voiceDuration: 0,
     voiceError: "",
+    submitStatus: "idle",
+    submitError: "",
+    reportUrl: "",
+    reportPdfUrl: "",
+    reportSheetUrl: "",
   });
 
   const update = (patch) => setState((s) => ({ ...s, ...patch }));
@@ -842,10 +963,11 @@ function StepChecklist({ state, update, onNext }) {
     photoInputRefs.current[id]?.click();
   };
 
-  const handlePhotoCaptured = (id, event) => {
+  const handlePhotoCaptured = async (id, event) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    const photoDataUrl = await imageFileToCompressedDataUrl(file);
     const cur = state.checks[id] || {};
     update({
       checks: {
@@ -856,6 +978,7 @@ function StepChecklist({ state, update, onNext }) {
           photo: true,
           photoName: file.name,
           photoCapturedAt: new Date().toISOString(),
+          photoDataUrl,
         },
       },
     });
@@ -1038,10 +1161,11 @@ function StepRequiredPhotos({ state, update, onNext }) {
     photoInputRefs.current[id]?.click();
   };
 
-  const handlePhotoCaptured = (id, event) => {
+  const handlePhotoCaptured = async (id, event) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    const photoDataUrl = await imageFileToCompressedDataUrl(file);
     update({
       requiredPhotos: {
         ...state.requiredPhotos,
@@ -1049,6 +1173,7 @@ function StepRequiredPhotos({ state, update, onNext }) {
           taken: true,
           photoName: file.name,
           photoCapturedAt: new Date().toISOString(),
+          photoDataUrl,
         },
       },
     });
@@ -1179,6 +1304,7 @@ function StepNotes({ state, update, onNext }) {
       chips: [],
       text: "",
       voiceBlobUrl: null,
+      voiceDataUrl: null,
       voiceMimeType: "",
       voiceDuration: 0,
       voiceError: "",
@@ -1351,10 +1477,11 @@ function VoiceButton({ state, update }) {
         }
       };
 
-      recorder.onstop = () => {
+      recorder.onstop = async () => {
         const mimeType = recorder.mimeType || "audio/webm";
         const blob = new Blob(chunksRef.current, { type: mimeType });
         const url = URL.createObjectURL(blob);
+        const voiceDataUrl = await blobToDataUrl(blob);
         const duration = startedAtRef.current
           ? Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000))
           : 0;
@@ -1365,6 +1492,7 @@ function VoiceButton({ state, update }) {
         update({
           noteMode: "voice",
           voiceBlobUrl: url,
+          voiceDataUrl,
           voiceMimeType: mimeType,
           voiceDuration: duration,
           voiceError: "",
@@ -1446,16 +1574,36 @@ function StepSummary({ state, update, onNext }) {
   ).length;
   const photoCount = checklistPhotoCount + requiredPhotoCount;
 
-  const handleClockOut = () => {
+  const handleClockOut = async () => {
     setSubmitting(true);
-    setTimeout(() => {
-      const now = new Date();
-      const t = `${String(now.getHours()).padStart(2, "0")}:${String(
-        now.getMinutes()
-      ).padStart(2, "0")}`;
-      update({ clockOutAt: t });
-      setTimeout(onNext, 80);
-    }, 700);
+    const now = new Date();
+    const t = `${String(now.getHours()).padStart(2, "0")}:${String(
+      now.getMinutes()
+    ).padStart(2, "0")}`;
+    const finalState = { ...state, clockOutAt: t };
+    update({ clockOutAt: t, submitStatus: "submitting", submitError: "" });
+
+    try {
+      const payload = buildDailyReportPayload(finalState);
+      const result = await submitDailyReport(payload);
+      update({
+        clockOutAt: t,
+        submitStatus: "sent",
+        submitError: "",
+        reportUrl: result.slideUrl || "",
+        reportPdfUrl: result.pdfUrl || "",
+        reportSheetUrl: result.sheetUrl || "",
+      });
+    } catch (error) {
+      update({
+        clockOutAt: t,
+        submitStatus: "failed",
+        submitError: error.message || "구글 보고서 전송에 실패했습니다.",
+      });
+    }
+
+    setSubmitting(false);
+    setTimeout(onNext, 80);
   };
 
   return (
@@ -1463,7 +1611,7 @@ function StepSummary({ state, update, onNext }) {
       <StepHeader
         tag="오늘 한 일"
         title="요약 확인 후 퇴근"
-        desc="퇴근하고 보고서 보내기를 누르면 퇴근 시간이 자동 기록되어 함께 전송됩니다."
+        desc="퇴근하고 보고서 보내기를 누르면 퇴근 시간이 자동 기록되고 Google 보고서 생성 요청이 전송됩니다."
       />
 
       <div
@@ -1549,7 +1697,7 @@ function StepSummary({ state, update, onNext }) {
           tone="primary"
           disabled={submitting}
         >
-          {submitting ? "퇴근 시간 기록 후 전송 중..." : "퇴근하고 보고서 보내기"}
+          {submitting ? "Google 보고서 생성 중..." : "퇴근하고 보고서 보내기"}
         </BigButton>
         <button
           className="w-full mt-3 text-sm font-bold"
@@ -1632,6 +1780,42 @@ function StepDone({ state, onExit }) {
           <SummaryCell label="체크" value={`${doneChecks}/${totalChecks}`} />
           <SummaryCell label="사진" value={`${photoCount}장`} />
         </div>
+
+        {state.submitStatus === "sent" && (state.reportUrl || state.reportPdfUrl) && (
+          <div className="mt-4 grid grid-cols-1 gap-2">
+            {state.reportUrl && (
+              <a
+                href={state.reportUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{ background: KB.navy, color: "#fff" }}
+                className="rounded-xl px-4 py-3 text-center text-sm font-black"
+              >
+                생성된 구글 슬라이드 열기
+              </a>
+            )}
+            {state.reportPdfUrl && (
+              <a
+                href={state.reportPdfUrl}
+                target="_blank"
+                rel="noreferrer"
+                style={{ background: KB.gold, color: KB.navy }}
+                className="rounded-xl px-4 py-3 text-center text-sm font-black"
+              >
+                PDF 다운로드/확인
+              </a>
+            )}
+          </div>
+        )}
+
+        {state.submitStatus === "failed" && (
+          <div
+            style={{ background: KB.badSoft, color: KB.bad }}
+            className="mt-4 rounded-xl p-3 text-sm font-bold"
+          >
+            Google 보고서 전송 실패: {state.submitError || "환경변수 또는 Apps Script URL을 확인해주세요."}
+          </div>
+        )}
         <div className="mt-4 pt-4 text-sm" style={{ borderTop: `1px dashed ${KB.line}` }}>
           <div className="text-[11px] font-black mb-1" style={{ color: KB.inkSoft, letterSpacing: "0.15em" }}>
             특이사항
