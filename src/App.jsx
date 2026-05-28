@@ -564,10 +564,14 @@ function WorkerApp({ onExit }) {
     clockInAt: null,
     clockOutAt: null,
     checks: {}, // pointId -> { done: bool, photo: bool }
-    requiredPhotos: {}, // rpId -> bool
-    noteMode: null, // 'none' | 'voice' | 'chips' | 'text'
+    requiredPhotos: {}, // rpId -> { taken, photoName, photoCapturedAt }
+    noteMode: null, // null | 'none' | 'voice' | 'chips' | 'text'
     chips: [],
     text: "",
+    voiceBlobUrl: null,
+    voiceMimeType: "",
+    voiceDuration: 0,
+    voiceError: "",
   });
 
   const update = (patch) => setState((s) => ({ ...s, ...patch }));
@@ -632,7 +636,7 @@ function WorkerApp({ onExit }) {
             {step === 5 && (
               <StepSummary state={state} update={update} onNext={goNext} />
             )}
-            {step === 6 && <StepDone onExit={onExit} />}
+            {step === 6 && <StepDone state={state} onExit={onExit} />}
           </motion.div>
         </AnimatePresence>
       </div>
@@ -1023,25 +1027,45 @@ function StepChecklist({ state, update, onNext }) {
 
 /* Step 3 — 필수 사진 */
 function StepRequiredPhotos({ state, update, onNext }) {
-  const toggle = (id) => {
+  const photoInputRefs = useRef({});
+
+  const isTaken = (id) => {
+    const value = state.requiredPhotos[id];
+    return value === true || value?.taken === true;
+  };
+
+  const requestPhoto = (id) => {
+    photoInputRefs.current[id]?.click();
+  };
+
+  const handlePhotoCaptured = (id, event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
     update({
       requiredPhotos: {
         ...state.requiredPhotos,
-        [id]: !state.requiredPhotos[id],
+        [id]: {
+          taken: true,
+          photoName: file.name,
+          photoCapturedAt: new Date().toISOString(),
+        },
       },
     });
+
+    // 같은 항목을 다시 촬영할 수 있도록 input 값을 비웁니다.
+    event.target.value = "";
   };
+
   const total = SITE.requiredPhotos.length;
-  const done = SITE.requiredPhotos.filter(
-    (rp) => state.requiredPhotos[rp.id]
-  ).length;
+  const done = SITE.requiredPhotos.filter((rp) => isTaken(rp.id)).length;
 
   return (
     <div>
       <StepHeader
         tag="필수 증빙"
         title="현장 공통 사진을 남겨주세요"
-        desc="월간 보고서 표지가 되는 핵심 사진입니다."
+        desc="필수 증빙 사진도 실제 촬영/선택이 완료되어야 촬영 완료로 표시됩니다."
       />
 
       <div className="flex items-center gap-2 text-xs font-bold mb-3" style={{ color: KB.inkSoft }}>
@@ -1051,42 +1075,62 @@ function StepRequiredPhotos({ state, update, onNext }) {
 
       <div className="grid grid-cols-2 gap-2.5">
         {SITE.requiredPhotos.map((rp) => {
-          const taken = state.requiredPhotos[rp.id];
+          const taken = isTaken(rp.id);
+          const photoInfo = state.requiredPhotos[rp.id];
           return (
-            <button
-              key={rp.id}
-              onClick={() => toggle(rp.id)}
-              style={{
-                background: taken
-                  ? `linear-gradient(135deg, ${KB.navy}, ${KB.navyLight})`
-                  : "#fff",
-                border: `1.5px solid ${taken ? KB.navy : KB.line}`,
-                aspectRatio: "1 / 1",
-              }}
-              className="rounded-2xl p-3 flex flex-col items-center justify-center relative overflow-hidden"
-            >
-              {taken && (
+            <div key={rp.id} className="relative">
+              <input
+                ref={(el) => {
+                  if (el) photoInputRefs.current[rp.id] = el;
+                }}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(event) => handlePhotoCaptured(rp.id, event)}
+              />
+              <button
+                onClick={() => requestPhoto(rp.id)}
+                style={{
+                  background: taken
+                    ? `linear-gradient(135deg, ${KB.navy}, ${KB.navyLight})`
+                    : "#fff",
+                  border: `1.5px solid ${taken ? KB.navy : KB.line}`,
+                  aspectRatio: "1 / 1",
+                }}
+                className="w-full rounded-2xl p-3 flex flex-col items-center justify-center relative overflow-hidden"
+              >
+                {taken && (
+                  <div
+                    style={{ background: KB.gold }}
+                    className="absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center"
+                  >
+                    <Check size={14} color={KB.navy} strokeWidth={3} />
+                  </div>
+                )}
+                <div className="text-3xl">{rp.emoji}</div>
                 <div
-                  style={{ background: KB.gold }}
-                  className="absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center"
+                  className="mt-2 text-xs font-bold text-center leading-tight"
+                  style={{ color: taken ? "#fff" : KB.navy }}
                 >
-                  <Check size={14} color={KB.navy} strokeWidth={3} />
+                  {rp.text}
                 </div>
-              )}
-              <div className="text-3xl">{rp.emoji}</div>
-              <div
-                className="mt-2 text-xs font-bold text-center leading-tight"
-                style={{ color: taken ? "#fff" : KB.navy }}
-              >
-                {rp.text}
-              </div>
-              <div
-                className="mt-2 text-[10px] font-bold"
-                style={{ color: taken ? KB.goldLight : KB.inkMute }}
-              >
-                {taken ? "촬영 완료" : "탭해서 촬영"}
-              </div>
-            </button>
+                <div
+                  className="mt-2 text-[10px] font-bold"
+                  style={{ color: taken ? KB.goldLight : KB.inkMute }}
+                >
+                  {taken ? "촬영 완료" : "탭해서 촬영"}
+                </div>
+                {taken && photoInfo?.photoCapturedAt && (
+                  <div className="mt-1 text-[9px] font-bold opacity-70" style={{ color: KB.goldLight }}>
+                    {new Date(photoInfo.photoCapturedAt).toLocaleTimeString("ko-KR", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </div>
+                )}
+              </button>
+            </div>
           );
         })}
       </div>
@@ -1097,7 +1141,7 @@ function StepRequiredPhotos({ state, update, onNext }) {
       >
         <Camera size={14} style={{ color: KB.gold }} className="mt-0.5 shrink-0" />
         <div style={{ color: KB.inkSoft }}>
-          <b style={{ color: KB.navy }}>같은 앵글로 촬영</b>해주세요. 지난번 사진이 흐릿하게 가이드로 표시됩니다.
+          <b style={{ color: KB.navy }}>같은 앵글로 촬영</b>해주세요. PC에서는 파일 선택창이 열리고, 휴대폰에서는 카메라 촬영 화면이 열립니다.
         </div>
       </div>
 
@@ -1114,25 +1158,50 @@ function StepRequiredPhotos({ state, update, onNext }) {
 function StepNotes({ state, update, onNext }) {
   const toggleChip = (chip) => {
     const has = state.chips.includes(chip);
+    const nextChips = has
+      ? state.chips.filter((c) => c !== chip)
+      : [...state.chips, chip];
+
     update({
-      chips: has ? state.chips.filter((c) => c !== chip) : [...state.chips, chip],
+      noteMode: nextChips.length > 0 ? "chips" : null,
+      chips: nextChips,
+    });
+  };
+
+  const toggleNone = () => {
+    if (state.noteMode === "none") {
+      update({ noteMode: null });
+      return;
+    }
+
+    update({
+      noteMode: "none",
+      chips: [],
+      text: "",
+      voiceBlobUrl: null,
+      voiceMimeType: "",
+      voiceDuration: 0,
+      voiceError: "",
     });
   };
 
   const hasAnything =
-    state.noteMode === "none" || state.chips.length > 0 || state.text.length > 0;
+    state.noteMode === "none" ||
+    state.chips.length > 0 ||
+    state.text.trim().length > 0 ||
+    Boolean(state.voiceBlobUrl);
 
   return (
     <div>
       <StepHeader
         tag="특이사항"
         title="오늘 따로 보고할 게 있나요?"
-        desc="없으면 맨 위 버튼 한 번이면 끝납니다."
+        desc="특이사항 없음은 다시 누르면 해제됩니다. 음성 녹음은 브라우저 마이크 권한을 사용합니다."
       />
 
       {/* 특이사항 없음 */}
       <button
-        onClick={() => update({ noteMode: "none", chips: [], text: "" })}
+        onClick={toggleNone}
         style={{
           background: state.noteMode === "none" ? KB.ok : "#fff",
           border: `2px solid ${state.noteMode === "none" ? KB.ok : KB.line}`,
@@ -1141,8 +1210,13 @@ function StepNotes({ state, update, onNext }) {
         className="w-full p-5 rounded-2xl font-black text-lg flex items-center justify-center gap-2"
       >
         <ThumbsUp size={22} />
-        특이사항 없음
+        {state.noteMode === "none" ? "특이사항 없음 선택됨" : "특이사항 없음"}
       </button>
+      {state.noteMode === "none" && (
+        <div className="mt-2 text-center text-[11px] font-bold" style={{ color: KB.inkMute }}>
+          다시 누르면 선택이 해제됩니다.
+        </div>
+      )}
 
       <div className="my-5 flex items-center gap-3">
         <div className="flex-1 h-px" style={{ background: KB.line }} />
@@ -1206,6 +1280,27 @@ function StepNotes({ state, update, onNext }) {
         />
       )}
 
+      {state.voiceBlobUrl && (
+        <div
+          style={{ background: KB.okSoft, border: `1px solid #B5DDC8` }}
+          className="mt-3 rounded-xl p-3"
+        >
+          <div className="text-xs font-black mb-2" style={{ color: KB.ok }}>
+            음성 메모 녹음 완료 {state.voiceDuration ? `· ${state.voiceDuration}초` : ""}
+          </div>
+          <audio controls src={state.voiceBlobUrl} className="w-full" />
+        </div>
+      )}
+
+      {state.voiceError && (
+        <div
+          style={{ background: KB.badSoft, color: KB.bad, border: `1px solid #F8C9B8` }}
+          className="mt-3 rounded-xl p-3 text-xs font-bold"
+        >
+          {state.voiceError}
+        </div>
+      )}
+
       <div className="mt-6">
         <BigButton onClick={onNext} icon={ArrowRight} disabled={!hasAnything}>
           {hasAnything ? "다음 — 요약 확인" : "위에서 하나 선택해주세요"}
@@ -1217,14 +1312,89 @@ function StepNotes({ state, update, onNext }) {
 
 function VoiceButton({ state, update }) {
   const [recording, setRecording] = useState(false);
+  const mediaRecorderRef = useRef(null);
+  const chunksRef = useRef([]);
+  const streamRef = useRef(null);
+  const startedAtRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  const startRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      update({
+        noteMode: "voice",
+        voiceError:
+          "이 브라우저에서는 바로 녹음이 지원되지 않습니다. 휴대폰 Chrome/Safari 최신 버전 또는 HTTPS 주소에서 다시 시도해주세요.",
+      });
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      startedAtRef.current = Date.now();
+
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const mimeType = recorder.mimeType || "audio/webm";
+        const blob = new Blob(chunksRef.current, { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const duration = startedAtRef.current
+          ? Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000))
+          : 0;
+
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+
+        update({
+          noteMode: "voice",
+          voiceBlobUrl: url,
+          voiceMimeType: mimeType,
+          voiceDuration: duration,
+          voiceError: "",
+        });
+      };
+
+      recorder.start();
+      setRecording(true);
+      update({ noteMode: "voice", voiceError: "" });
+    } catch (error) {
+      update({
+        noteMode: "voice",
+        voiceError:
+          "마이크 권한이 허용되지 않았습니다. 브라우저 주소창의 권한 설정에서 마이크를 허용해주세요.",
+      });
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
+    }
+    setRecording(false);
+  };
 
   const toggle = () => {
     if (recording) {
-      setRecording(false);
-      update({ noteMode: "voice", text: state.text || "(음성 메모 1건 첨부됨)" });
+      stopRecording();
     } else {
-      update({ noteMode: "voice" });
-      setRecording(true);
+      startRecording();
     }
   };
 
@@ -1244,13 +1414,19 @@ function VoiceButton({ state, update }) {
         <>
           <MicOff size={20} />
           녹음 중지
-          <span className="text-[10px] font-bold opacity-70">탭하면 종료</span>
+          <span className="text-[10px] font-bold opacity-70">탭하면 저장</span>
+        </>
+      ) : state.voiceBlobUrl ? (
+        <>
+          <Mic size={20} />
+          다시 녹음
+          <span className="text-[10px] font-bold opacity-70">기존 녹음 교체</span>
         </>
       ) : (
         <>
           <Mic size={20} />
           음성 녹음
-          <span className="text-[10px] font-bold opacity-70">한 번 탭</span>
+          <span className="text-[10px] font-bold opacity-70">마이크 권한 필요</span>
         </>
       )}
     </button>
@@ -1264,7 +1440,11 @@ function StepSummary({ state, update, onNext }) {
   const doneChecks = Object.values(state.checks).filter((c) => c.done).length;
   const totalChecks =
     SITE.regularPoints.length + SITE.todayOrders.length;
-  const photoCount = Object.values(state.requiredPhotos).filter(Boolean).length;
+  const checklistPhotoCount = Object.values(state.checks).filter((c) => c.photo).length;
+  const requiredPhotoCount = Object.values(state.requiredPhotos).filter(
+    (p) => p === true || p?.taken === true
+  ).length;
+  const photoCount = checklistPhotoCount + requiredPhotoCount;
 
   const handleClockOut = () => {
     setSubmitting(true);
@@ -1274,8 +1454,8 @@ function StepSummary({ state, update, onNext }) {
         now.getMinutes()
       ).padStart(2, "0")}`;
       update({ clockOutAt: t });
-      onNext();
-    }, 1000);
+      setTimeout(onNext, 80);
+    }, 700);
   };
 
   return (
@@ -1283,7 +1463,7 @@ function StepSummary({ state, update, onNext }) {
       <StepHeader
         tag="오늘 한 일"
         title="요약 확인 후 퇴근"
-        desc="아래 내용 그대로 관리자에게 전송됩니다."
+        desc="퇴근하고 보고서 보내기를 누르면 퇴근 시간이 자동 기록되어 함께 전송됩니다."
       />
 
       <div
@@ -1305,8 +1485,9 @@ function StepSummary({ state, update, onNext }) {
           <Brand size="md" />
         </div>
 
-        <div className="mt-4 grid grid-cols-3 gap-2">
+        <div className="mt-4 grid grid-cols-2 gap-2">
           <SummaryCell label="출근" value={state.clockInAt || "—"} />
+          <SummaryCell label="퇴근" value={state.clockOutAt || "전송 시 기록"} />
           <SummaryCell label="체크" value={`${doneChecks}/${totalChecks}`} />
           <SummaryCell label="사진" value={`${photoCount}장`} />
         </div>
@@ -1338,6 +1519,26 @@ function StepSummary({ state, update, onNext }) {
               {state.text}
             </div>
           )}
+          {state.voiceBlobUrl && (
+            <div className="mt-3">
+              <div className="text-xs font-black mb-1" style={{ color: KB.ok }}>
+                음성 메모 첨부됨 {state.voiceDuration ? `· ${state.voiceDuration}초` : ""}
+              </div>
+              <audio controls src={state.voiceBlobUrl} className="w-full" />
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div
+        style={{ background: "#fff", border: `1px solid ${KB.line}` }}
+        className="mt-4 rounded-xl p-3 text-xs"
+      >
+        <div className="font-black" style={{ color: KB.navy }}>
+          전송 시 포함되는 시간
+        </div>
+        <div className="mt-1" style={{ color: KB.inkSoft }}>
+          출근 시간: <b>{state.clockInAt || "—"}</b> · 퇴근 시간: <b>버튼 클릭 시 자동 기록</b>
         </div>
       </div>
 
@@ -1348,7 +1549,7 @@ function StepSummary({ state, update, onNext }) {
           tone="primary"
           disabled={submitting}
         >
-          {submitting ? "전송 중..." : "퇴근하고 보고서 보내기"}
+          {submitting ? "퇴근 시간 기록 후 전송 중..." : "퇴근하고 보고서 보내기"}
         </BigButton>
         <button
           className="w-full mt-3 text-sm font-bold"
@@ -1381,7 +1582,15 @@ function SummaryCell({ label, value }) {
 }
 
 /* Step 6 — 완료 */
-function StepDone({ onExit }) {
+function StepDone({ state, onExit }) {
+  const doneChecks = Object.values(state.checks).filter((c) => c.done).length;
+  const totalChecks = SITE.regularPoints.length + SITE.todayOrders.length;
+  const checklistPhotoCount = Object.values(state.checks).filter((c) => c.photo).length;
+  const requiredPhotoCount = Object.values(state.requiredPhotos).filter(
+    (p) => p === true || p?.taken === true
+  ).length;
+  const photoCount = checklistPhotoCount + requiredPhotoCount;
+
   return (
     <div className="text-center py-12">
       <motion.div
@@ -1400,12 +1609,55 @@ function StepDone({ onExit }) {
         className="mt-8 text-3xl font-black"
         style={{ color: KB.navy, letterSpacing: "-0.03em" }}
       >
-        수고하셨습니다!
+        보고서 전송 완료
       </h2>
       <p className="mt-3 text-sm" style={{ color: KB.inkSoft }}>
         오늘의 보고서가 관리자에게 전송되었습니다.<br />
-        편안한 하루 되세요.
+        출근·퇴근 시간이 함께 기록되었습니다.
       </p>
+
+      <div
+        style={{ background: "#fff", border: `1px solid ${KB.line}` }}
+        className="mt-8 rounded-2xl p-4 text-left"
+      >
+        <div className="text-xs font-bold" style={{ color: KB.gold, letterSpacing: "0.15em" }}>
+          SENT REPORT
+        </div>
+        <div className="mt-1 text-lg font-black" style={{ color: KB.navy }}>
+          {SITE.name}
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-2">
+          <SummaryCell label="출근" value={state.clockInAt || "—"} />
+          <SummaryCell label="퇴근" value={state.clockOutAt || "—"} />
+          <SummaryCell label="체크" value={`${doneChecks}/${totalChecks}`} />
+          <SummaryCell label="사진" value={`${photoCount}장`} />
+        </div>
+        <div className="mt-4 pt-4 text-sm" style={{ borderTop: `1px dashed ${KB.line}` }}>
+          <div className="text-[11px] font-black mb-1" style={{ color: KB.inkSoft, letterSpacing: "0.15em" }}>
+            특이사항
+          </div>
+          {state.noteMode === "none" && (
+            <div style={{ color: KB.ok }} className="font-bold">✓ 특이사항 없음</div>
+          )}
+          {state.chips.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-1">
+              {state.chips.map((c) => <Pill key={c} tone="gold">{c}</Pill>)}
+            </div>
+          )}
+          {state.text && state.noteMode !== "none" && (
+            <div className="mt-2" style={{ color: KB.navy }}>{state.text}</div>
+          )}
+          {state.voiceBlobUrl && (
+            <div className="mt-3">
+              <div className="text-xs font-black mb-1" style={{ color: KB.ok }}>
+                음성 메모 첨부됨 {state.voiceDuration ? `· ${state.voiceDuration}초` : ""}
+              </div>
+              <audio controls src={state.voiceBlobUrl} className="w-full" />
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="mt-10 max-w-xs mx-auto">
         <BigButton onClick={onExit} tone="ghost">
           처음 화면으로
