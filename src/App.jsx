@@ -440,7 +440,7 @@ function RoleHome({ onPick }) {
         style={{
           background: `linear-gradient(135deg, ${KB.navyDeep} 0%, ${KB.navy} 55%, ${KB.navyLight} 100%)`,
         }}
-        className="px-6 pt-14 pb-20 text-white relative overflow-hidden"
+        className="px-6 pt-12 pb-10 text-white relative overflow-hidden"
       >
         <div
           style={{
@@ -472,7 +472,7 @@ function RoleHome({ onPick }) {
         </div>
       </div>
 
-      <div className="px-6 -mt-12 pb-12 max-w-md mx-auto w-full">
+      <div className="px-6 mt-5 pb-12 max-w-md mx-auto w-full">
         <div className="space-y-3">
           <RoleCard
             icon={UserRound}
@@ -825,17 +825,39 @@ function StepClockIn({ state, update, onNext }) {
 
 /* Step 2 — 체크리스트 */
 function StepChecklist({ state, update, onNext }) {
-  const toggleDone = (id) => {
+  const photoInputRefs = useRef({});
+
+  const markOrderDone = (id) => {
     const cur = state.checks[id] || {};
     update({
       checks: { ...state.checks, [id]: { ...cur, done: !cur.done } },
     });
   };
-  const togglePhoto = (id) => {
+
+  const requestPhoto = (id) => {
+    photoInputRefs.current[id]?.click();
+  };
+
+  const handlePhotoCaptured = (id, event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
     const cur = state.checks[id] || {};
     update({
-      checks: { ...state.checks, [id]: { ...cur, photo: !cur.photo } },
+      checks: {
+        ...state.checks,
+        [id]: {
+          ...cur,
+          done: true,
+          photo: true,
+          photoName: file.name,
+          photoCapturedAt: new Date().toISOString(),
+        },
+      },
     });
+
+    // 같은 항목을 다시 촬영할 수 있도록 input 값을 비웁니다.
+    event.target.value = "";
   };
 
   const doneCount = SITE.regularPoints.filter(
@@ -848,7 +870,7 @@ function StepChecklist({ state, update, onNext }) {
       <StepHeader
         tag="오늘 할 일"
         title="정기 점검 항목 체크"
-        desc="작업하면서 그 자리에서 체크 + 사진 한 장"
+        desc="촬영을 완료해야 체크됩니다. 왼쪽 동그라미나 촬영 버튼을 누르면 카메라가 열립니다."
       />
 
       <div
@@ -886,13 +908,24 @@ function StepChecklist({ state, update, onNext }) {
               }}
               className="rounded-xl p-3.5 flex items-center gap-3"
             >
+              <input
+                ref={(el) => {
+                  if (el) photoInputRefs.current[p.id] = el;
+                }}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                className="hidden"
+                onChange={(event) => handlePhotoCaptured(p.id, event)}
+              />
               <button
-                onClick={() => toggleDone(p.id)}
+                onClick={() => requestPhoto(p.id)}
                 style={{
                   background: c.done ? KB.ok : "#fff",
                   border: `2px solid ${c.done ? KB.ok : KB.line}`,
                 }}
                 className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+                aria-label={`${p.text} 촬영하기`}
               >
                 {c.done && <Check size={16} color="#fff" strokeWidth={3} />}
               </button>
@@ -908,9 +941,14 @@ function StepChecklist({ state, update, onNext }) {
                   <span>{p.icon}</span>
                   {p.text}
                 </div>
+                {!c.done && (
+                  <div className="text-[10px] font-bold mt-0.5" style={{ color: KB.inkMute }}>
+                    촬영 완료 후 자동 체크
+                  </div>
+                )}
               </div>
               <button
-                onClick={() => togglePhoto(p.id)}
+                onClick={() => requestPhoto(p.id)}
                 style={{
                   background: c.photo ? KB.gold : "#fff",
                   border: `1.5px solid ${c.photo ? KB.gold : KB.line}`,
@@ -948,7 +986,7 @@ function StepChecklist({ state, update, onNext }) {
                 className="rounded-xl p-3.5 flex items-start gap-3"
               >
                 <button
-                  onClick={() => toggleDone(id)}
+                  onClick={() => markOrderDone(id)}
                   style={{
                     background: c.done ? KB.ok : "#fff",
                     border: `2px solid ${c.done ? KB.ok : "#8B6914"}`,
@@ -976,7 +1014,7 @@ function StepChecklist({ state, update, onNext }) {
           다음 — 필수 사진 단계로
         </BigButton>
         <div className="text-center mt-2 text-xs" style={{ color: KB.inkMute }}>
-          체크 안 한 항목은 다음 단계에서 다시 안내드려요
+          정기 점검 항목은 사진 촬영이 완료된 항목만 체크됩니다
         </div>
       </div>
     </div>
